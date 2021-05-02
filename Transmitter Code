@@ -1,0 +1,222 @@
+// First Version of the "Position Meter" and transmitter for the Robotic Arm
+#include <SPI.h>
+#include <RF24.h>
+#include <I2Cdev.h>
+#include <MPU6050.h>
+
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+    #include "Wire.h"
+#endif
+
+// class default I2C address is 0x68
+// specific I2C addresses may be passed as a parameter here
+// AD0 low = 0x68 (default for InvenSense evaluation board)
+// AD0 high = 0x69
+
+MPU6050 accelgyro;      // communicates with arduino through i2c
+//MPU6050 accelgyro(0x69); // <-- use for AD0 high
+
+RF24 radio(7,8); //(CE, CSN) (RF24 runs on SPI - use 11:MOSI, 12:MISO, 13:SCK) ; modem connected to arduino
+byte address[][6] = {"1Node","2Node"};  // address of modem receiving data from arduino
+bool radioNumber = 0;  
+int packet[2];
+
+
+// uncomment "OUTPUT_READABLE_ACCELGYRO" if you want to see a tab-separated
+// list of the accel X/Y/Z and then gyro X/Y/Z values in decimal. Easy to read,
+// not so easy to parse, and slow(er) over UART.
+#define OUTPUT_READABLE_ACCELGYRO
+
+// uncomment "OUTPUT_BINARY_ACCELGYRO" to send all 6 axes of data as 16-bit
+// binary, one right after the other. This is very fast (as fast as possible
+// without compression or data loss), and easy to parse, but impossible to read
+// for a human.
+//#define OUTPUT_BINARY_ACCELGYRO
+
+#define ZERO_PIN A3
+#define LED_PIN 13
+
+const int NUM_DATAPOINTS = 24;
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
+int16_t offsetData[6][NUM_DATAPOINTS];
+int32_t axAvg, ayAvg, azAvg, gxAvg, gyAvg, gzAvg;
+int16_t averages[6];
+bool buttonState;
+
+
+
+
+void setup() {
+  // join I2C bus (I2Cdev library doesn't do this automatically)
+  #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+      Wire.begin();  // join I2C bus as master
+  #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+      Fastwire::setup(400, true);      // kilohertz and pullup
+  #endif
+
+  // (38400 chosen because it works as well at 8MHz as it does at 16MHz, but
+  // it's really up to you depending on your project)
+  Serial.begin(115200);        // baud rate with CPU
+
+  axAvg = 0;
+  ayAvg = 0;
+  azAvg = 0;
+  gxAvg = 0;
+  gyAvg = 0;
+  gzAvg = 0;
+
+  Serial.println("Initializing I2C devices...");
+  accelgyro.initialize();
+
+  Serial.println("Testing device connections...");
+  Serial.println(accelgyro.testConnection() ? "MPU6050 connection successful" : "MPU6050 connection failed");
+
+  pinMode(LED_PIN, OUTPUT);            // set mode of led pin
+  pinMode(ZERO_PIN, INPUT_PULLUP);     // set mode of zero pin
+ 
+  while(!radio.begin()) {     // modem not activated
+    Serial.println("radio is not responding: check hardware");
+    delay(500);
+  }
+  radio.setPALevel(RF24_PA_MIN);       // set power amplifier to 18dBm
+  radio.setDataRate(RF24_1MBPS);       // set transmission data rate for 1mbps
+  //radio.setChannel(124);
+  radio.stopListening();                 // stop listening for incoming messages
+  radio.openReadingPipe(1, address[1]);    //open pipe to read
+  radio.openWritingPipe(address[0]);     // open pipe for writing
+}
+
+
+void takeAverage()
+{
+  for(int i = 0; i < NUM_DATAPOINTS; i++)     //storing several datapoints in an array to calculate an average
+    {
+      accelgyro.getMotion6(&offsetData[0][i], &offsetData[1][i], &offsetData[2][i],
+                           &offsetData[3][i], &offsetData[4][i], &offsetData[5][i]); //gets a and g val
+    }
+    axAvg, ayAvg, azAvg, gxAvg, gyAvg, gzAvg = 0;
+   
+    for(int i = 0; i < NUM_DATAPOINTS; i++){
+      axAvg += offsetData[0][i];
+    }
+    for(int i = 0; i < NUM_DATAPOINTS; i++){
+      ayAvg += offsetData[1][i];
+    }
+    for(int i = 0; i < NUM_DATAPOINTS; i++){
+      azAvg += offsetData[2][i];
+    }
+    for(int i = 0; i < NUM_DATAPOINTS; i++){
+      gxAvg += offsetData[3][i];
+    }
+    for(int i = 0; i < NUM_DATAPOINTS; i++){
+      gyAvg += offsetData[4][i];
+    }
+    for(int i = 0; i < NUM_DATAPOINTS; i++){
+      gzAvg += offsetData[5][i];
+    }
+    axAvg /= NUM_DATAPOINTS;
+    ayAvg /= NUM_DATAPOINTS;
+    azAvg /= NUM_DATAPOINTS;
+    gxAvg /= NUM_DATAPOINTS;
+    gyAvg /= NUM_DATAPOINTS;
+    gzAvg /= NUM_DATAPOINTS;
+    averages[0] = axAvg;  averages[1] = ayAvg;  averages[2] = azAvg;
+    averages[3] = gxAvg;  averages[4] = gyAvg;  averages[5] = gzAvg;
+}
+
+
+void zero(){
+ 
+  Serial.println("Zeroing sensor...");
+  Serial.println("Old Offsets:\n\t");
+  Serial.print(accelgyro.getXAccelOffset()); Serial.print("\t"); // -76
+  Serial.print(accelgyro.getYAccelOffset()); Serial.print("\t"); // -2359
+  Serial.print(accelgyro.getZAccelOffset()); Serial.print("\t"); // 1688
+  Serial.print(accelgyro.getXGyroOffset()); Serial.print("\t"); // 0
+  Serial.print(accelgyro.getYGyroOffset()); Serial.print("\t"); // 0
+  Serial.print(accelgyro.getZGyroOffset()); Serial.print("\t"); // 0
+  Serial.print("\n");
+
+  takeAverage();
+ 
+  Serial.print("axAvg is: "); Serial.println(axAvg);
+  Serial.print("ayAvg is: "); Serial.println(ayAvg);
+  Serial.print("azAvg is: "); Serial.println(azAvg);
+  Serial.print("gxAvg is: "); Serial.println(gxAvg);
+  Serial.print("gyAvg is: "); Serial.println(gyAvg);
+  Serial.print("gzAvg is: "); Serial.println(gzAvg);
+ 
+  accelgyro.setXAccelOffset(accelgyro.getXAccelOffset()-axAvg/9);
+  accelgyro.setYAccelOffset(accelgyro.getYAccelOffset()-ayAvg/9);
+  accelgyro.setZAccelOffset(accelgyro.getZAccelOffset()-(azAvg - 16200)/9);   //compensates for g when zeroing
+  accelgyro.setXGyroOffset(accelgyro.getXGyroOffset()-gxAvg/4);
+  accelgyro.setYGyroOffset(accelgyro.getYGyroOffset()-gyAvg/4);
+  accelgyro.setZGyroOffset(accelgyro.getZGyroOffset()-gzAvg/4);
+ 
+  Serial.print("\nNew Offsets:\n\t");
+  Serial.print(accelgyro.getXAccelOffset()); Serial.print("\t");
+  Serial.print(accelgyro.getYAccelOffset()); Serial.print("\t");
+  Serial.print(accelgyro.getZAccelOffset()); Serial.print("\t");
+  Serial.print(accelgyro.getXGyroOffset()); Serial.print("\t");
+  Serial.print(accelgyro.getYGyroOffset()); Serial.print("\t");
+  Serial.print(accelgyro.getZGyroOffset()); Serial.print("\t");
+  Serial.print("\n\n");
+}
+
+
+void loop() {
+ 
+  takeAverage();
+
+  // these methods (and a few others) are also available
+  //accelgyro.getAcceleration(&ax, &ay, &az);
+  //accelgyro.getRotation(&gx, &gy, &gz);
+
+  if(!digitalRead(ZERO_PIN))   // if value of zero pin is low
+  {
+    delay(1000);
+    zero();
+    while(!digitalRead(ZERO_PIN)){}   // if value of zero pin is low
+    delay(50);
+  }
+
+
+  for(int i = 0; i < 6; i++)
+  {
+    packet[0] = i;
+    packet[1] = averages[i];
+    if(radio.write(&packet, sizeof(packet))){  // send data to packet
+      Serial.print("\nSent packet: ");
+      Serial.print("[");  Serial.print(packet[0]);  Serial.print("]");
+      Serial.print("[");  Serial.print(packet[1]);  Serial.print("]");
+    }else{
+      Serial.println("failed to send");
+    }
+    Serial.print("\n");
+  }
+ 
+
+  /*
+  #ifdef OUTPUT_BINARY_ACCELGYRO
+      Serial.write((uint8_t)(ax >> 8)); Serial.write((uint8_t)(ax & 0xFF));
+      Serial.write((uint8_t)(ay >> 8)); Serial.write((uint8_t)(ay & 0xFF));
+      Serial.write((uint8_t)(az >> 8)); Serial.write((uint8_t)(az & 0xFF));
+      Serial.write((uint8_t)(gx >> 8)); Serial.write((uint8_t)(gx & 0xFF));
+      Serial.write((uint8_t)(gy >> 8)); Serial.write((uint8_t)(gy & 0xFF));
+      Serial.write((uint8_t)(gz >> 8)); Serial.write((uint8_t)(gz & 0xFF));
+  #endif
+ 
+  #ifdef OUTPUT_READABLE_ACCELGYRO
+      // display tab-separated accel/gyro x/y/z values
+      Serial.print("a/g:\t");
+      Serial.print(axAvg); Serial.print("\t");
+      Serial.print(ayAvg); Serial.print("\t");
+      Serial.print(-azAvg); Serial.print("\t");
+      Serial.print(gxAvg); Serial.print("\t");
+      Serial.print(gyAvg); Serial.print("\t");
+      Serial.println(gzAvg);
+  #endif
+  */
+
+}
