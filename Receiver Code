@@ -1,0 +1,108 @@
+#include <SPI.h>
+#include <RF24.h>
+#include <Servo.h>
+
+RF24 radio(7,8); //(CE, CSN) (RF24 runs on SPI - use 11:MOSI, 12:MISO, 13:SCK) ; modem connected to arduino
+const byte address[][6] = {"1Node", "2Node"}; // address of modem receiving data from arduino
+int packet[2]; // int array of 2
+bool recentPacket;        //purely for aesthetic when waiting for a packet
+
+int16_t ax, ay, az;      // acceleration val
+int16_t gx, gy, gz;      // rotation val
+const int redPin = 3;
+const int greenPin = 5;
+const int bluePin = 6;
+
+int_16_t px, py, pz;     // position val
+
+void setup() {
+  Serial.begin(115200);         // baud rate with CPU
+  while(!radio.begin()) {       // modem not activated
+    Serial.println("radio is not responding: check hardware");
+    delay(500);
+  }
+  radio.setPALevel(RF24_PA_MIN);  // set power amplifier to 18dBm
+  radio.setDataRate(RF24_1MBPS);  // set transmission data rate for 1mbps
+  //radio.setChannel(124);    // For some reason, this line was an issue
+  radio.openReadingPipe(1, address[0]);   // these will be flipped for the transmitter - open pipe to read
+  radio.openWritingPipe(address[1]); // open pipe for writing
+ 
+  pinMode(redPin, OUTPUT);        // set mode of red pin
+  pinMode(greenPin, OUTPUT);      // set mode of green pin
+  pinMode(bluePin, OUTPUT);       // set mode of blue pin
+  recentPacket = true;           
+}
+
+void loop() {
+
+  radio.startListening();          // start listening on pipe 1
+ 
+  unsigned long startWait = millis();  // number of milliseconds since Arduino ran current prog
+  while(!radio.available())           // no bytes available to read
+  {
+    if(millis() - startWait > 500){
+      if(recentPacket){
+        Serial.print("\nNo packet available");
+        recentPacket = false;
+      }
+      Serial.print(".");
+      packet[0] = -1; packet[1] = -1;
+      break;
+    }
+  }
+ 
+  if(radio.available()){        // bytes available to read
+    radio.read(&packet, sizeof(int[2]));  // data written in packet, max num of bytes to be read is 2
+    Serial.print("\nincoming packet is: ");
+    Serial.print("[");  Serial.print(packet[0]);  Serial.print("] ");
+    Serial.print("[");  Serial.print(packet[1]);  Serial.print("]");
+    recentPacket = true;
+  }
+ 
+  switch(packet[0])  // packet[0] = which case #
+  {
+    case 0:
+      ax = packet[1];
+      break;
+    case 1:
+      ay = packet[1];
+      break;
+    case 2:
+      az = packet[1];
+      break;
+    case 3:
+      gx = packet[1];
+      break;
+    case 4:
+      gy = packet[1];
+      break;
+    case 5:
+      gz = packet[1];
+      break;
+    case -1:
+      break;
+  }
+ 
+  if(packet[0] == 5)
+  {
+    Serial.print("\nax = ");  Serial.print(ax); Serial.print("\t");
+    Serial.print("ay = ");  Serial.print(ay); Serial.print("\t");
+    Serial.print("az = ");  Serial.print(az); Serial.print("\t");
+    Serial.print("\ngx = ");  Serial.print(gx); Serial.print("\t");
+    Serial.print("gy = ");  Serial.print(gy); Serial.print("\t");
+    Serial.print("gz = ");  Serial.print(gz); Serial.print("\t");
+  }
+  analogWrite(redPin, abs(ax)/240);     // ax duty cycle
+  analogWrite(greenPin, abs(ay)/240);   // ay duty cycle
+  analogWrite(bluePin, abs(az)/240);    // az duty cycle
+}
+
+void getPosition(){
+   int_16_t vx, vy, vz;
+   vx = ax * millis();
+   vy = ay * millis();
+   vz = az * millis();
+   px = vx * millis();
+   py = vy * millis();
+   pz = vz * millis();
+}
